@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Precision Hand Interface v4.2 // STEADY_CLEAR</title>
+    <style>
+        :root { --neon-green: #00ff88; --glass-white: rgba(255, 255, 255, 0.1); }
+        body { margin: 0; background-color: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; height: 100vh; width: 100vw; }
+        #input_video { display: none; }
+        .container { position: relative; width: 100%; height: 100%; }
+        canvas { display: block; width: 100%; height: 100%; transform: scaleX(-1); }
+
+        .ui-overlay {
+            position: absolute; bottom: 30px; left: 30px;
+            padding: 20px; background: rgba(0, 20, 10, 0.7);
+            backdrop-filter: blur(20px); border-radius: 12px;
+            border-left: 5px solid var(--neon-green);
+            color: white; pointer-events: none; z-index: 10;
+        }
+        .gesture-val { font-size: 32px; color: var(--neon-green); text-shadow: 0 0 15px var(--neon-green); font-weight: bold; margin-top: 5px; }
+        
+        .controls { position: absolute; top: 20px; right: 20px; z-index: 100; }
+        button {
+            background: var(--glass-white); border: 1px solid rgba(255,255,255,0.2);
+            color: #eee; padding: 10px 20px; cursor: pointer; border-radius: 8px; font-size: 14px;
+        }
+        button.active { color: var(--neon-green); border-color: var(--neon-green); background: rgba(0,255,136,0.1); }
+
+        .loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: var(--neon-green); font-size: 20px; animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div class="loading" id="loading">CORE INITIALIZING...</div>
+    
+    <div class="container">
+        <div class="ui-overlay">
+            <div style="font-size: 11px; opacity: 0.5; letter-spacing: 3px;">SYSTEM.PRECISION_V4.2</div>
+            <div id="gesture-display" class="gesture-val">STANDBY</div>
+        </div>
+        <video id="input_video" playsinline muted></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <div class="controls">
+        <button id="btn-video">OVERLAY MODE</button>
+    </div>
+
+
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const ctx = canvasElement.getContext('2d');
+    const loadingMsg = document.getElementById('loading');
+    const gestureDisplay = document.getElementById('gesture-display');
+
+    let showVideo = false;
+    let smoothedLandmarks = [];
+    const SMOOTHING = 0.35; // 平滑滤波系数
+
+    function resize() {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function onResults(results) {
+        loadingMsg.style.display = 'none';
+
+        ctx.save();
+        if (showVideo) {
+            ctx.globalAlpha = 1.0;
+            ctx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+        } else {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; 
+            ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+        }
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            let gestures = [];
+            
+            results.multiHandLandmarks.forEach((landmarks, hIdx) => {
+                // 平滑算法
+                if (!smoothedLandmarks[hIdx]) {
+                    smoothedLandmarks[hIdx] = landmarks.map(p => ({...p}));
+                } else {
+                    landmarks.forEach((p, pIdx) => {
+                        smoothedLandmarks[hIdx][pIdx].x += (p.x - smoothedLandmarks[hIdx][pIdx].x) * SMOOTHING;
+                        smoothedLandmarks[hIdx][pIdx].y += (p.y - smoothedLandmarks[hIdx][pIdx].y) * SMOOTHING;
+                        smoothedLandmarks[hIdx][pIdx].z += (p.z - smoothedLandmarks[hIdx][pIdx].z) * SMOOTHING;
+                    });
+                }
+                
+                const activeLM = smoothedLandmarks[hIdx];
+                drawCleanSkeleton(activeLM);
+                gestures.push(analyzeNaturalGesture(activeLM));
+            });
+            gestureDisplay.innerText = gestures.join(" | ");
+        } else {
+            smoothedLandmarks = [];
+            gestureDisplay.innerText = "STANDBY";
+        }
+        ctx.restore();
+    }
+
+    function drawCleanSkeleton(landmarks) {
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = 'rgba(0, 255, 136, 0.5)';
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 5;
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+
+        const connections = HAND_CONNECTIONS;
+        ctx.beginPath();
+        for (const connection of connections) {
+            const p1 = landmarks[connection[0]];
+            const p2 = landmarks[connection[1]];
+            ctx.moveTo(p1.x * canvasElement.width, p1.y * canvasElement.height);
+            ctx.lineTo(p2.x * canvasElement.width, p2.y * canvasElement.height);
+        }
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffffff';
+        for (let i = 0; i < landmarks.length; i++) {
+            const x = landmarks[i].x * canvasElement.width;
+            const y = landmarks[i].y * canvasElement.height;
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    // 自然手势判定算法
+    function analyzeNaturalGesture(lm) {
+        const getDist = (p1, p2) => Math.hypot(lm[p1].x - lm[p2].x, lm[p1].y - lm[p2].y, (lm[p1].z - lm[p2].z));
+        const palmBase = getDist(0, 9); 
+        
+        // 判断手指伸直：仅看指尖到掌心(点0)的距离比例
+        const isOut = (tip, mcp) => getDist(tip, 0) > getDist(mcp, 0) * 1.1;
+
+        const f1 = isOut(8, 6), f2 = isOut(12, 10), f3 = isOut(16, 14), f4 = isOut(20, 18);
+        
+        // 大拇指判定：取消垂直设定，仅通过距离判断张开程度
+        const thumbOut = getDist(4, 17) / palmBase > 1.05;
+
+        const count = [f1, f2, f3, f4, thumbOut].filter(Boolean).length;
+
+        if (getDist(4, 8) / palmBase < 0.25 && f2 && f3 && f4) return "OK";
+        if (f1 && f2 && !f3 && !f4 && count <= 3) return "PEACE_SIGN";
+        if (thumbOut && count === 1 && lm[4].y < lm[2].y) return "THUMBS_UP";
+        if (count === 0) return "FIST";
+        if (count >= 4 && thumbOut) return "OPEN_HAND";
+        if (count >= 4 && thumbOut) return "OPEN_HAND";
+        
+        return `ID: ${count}`;
+    }
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
+    });
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 1280, height: 720
+    });
+
+    document.getElementById('btn-video').onclick = (e) => {
+        showVideo = !showVideo;
+        e.target.classList.toggle('active');
+    };
+
+    camera.start();
+</script>
+</body>
+</html>
